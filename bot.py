@@ -5,176 +5,916 @@ from flask import Flask
 from threading import Thread
 import os
 import urllib3
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import re
 
-# SSL ওয়ার্নিং বন্ধ রাখা
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup
+)
 
-# ----------- ১. ফ্লাস্ক সার্ভার (Render Keep Alive) -----------
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    CallbackQueryHandler
+)
+
+urllib3.disable_warnings(
+    urllib3.exceptions.InsecureRequestWarning
+)
+
+# =========================================================
+# FLASK KEEP ALIVE
+# =========================================================
+
 app = Flask('')
+
 @app.route('/')
-def home(): 
-    return "Multi-Board SSC Scanner (Cumilla & Chattogram) is Live!"
+def home():
+    return "MYMENSINGH MASTER BOT RUNNING!"
 
 def run():
-    # রেন্ডার অটোমেটিক পোর্ট সেট করে নেয়
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     Thread(target=run).start()
 
-# ----------- ২. কনফিগারেশন -----------
-BOT_TOKEN = "8780159859:AAE-a6WVrYlkVXnLZXsDUe43TaszpVq8ra4"
-user_preferences = {} # ইউজারের বোর্ড সিলেকশন সেভ করার জন্য
+# =========================================================
+# CONFIG
+# =========================================================
 
-# ----------- ৩. স্ক্র্যাপার লজিক (সুরক্ষিত ট্রাই-এক্সেপ্ট সহ) -----------
+BOT_TOKEN = "8929202421:AAGdff3s9cglir71FlZTHkM6qPVxk481VZ4"
 
-# --- কুমিল্লা বোর্ড লজিক ---
-def fetch_cumilla(roll):
-    url = "https://result19.comillaboard.gov.bd/2025/individual/result.php"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Referer": "https://result19.comillaboard.gov.bd/2025/individual/"
-    }
+session = requests.Session()
+
+headers = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://billpay.sonalibank.com.bd/XIClassAdmission/Fee/"
+}
+
+current_search_id = 0
+user_modes = {}
+
+# =========================================================
+# SONALI FETCH
+# =========================================================
+
+def get_sonali_data(tid):
+
+    url = (
+        "https://billpay.sonalibank.com.bd/"
+        f"XIClassAdmission/Home/Voucher/{tid}"
+    )
+
     try:
-        r = requests.post(url, data={"roll": roll}, headers=headers, timeout=15, verify=False)
-        if r.status_code != 200 or "Name" not in r.text:
-            return None, None
-            
+
+        r = session.get(
+            url,
+            headers=headers,
+            timeout=15,
+            verify=False
+        )
+
         soup = BeautifulSoup(r.text, "html.parser")
+
+        d = {
+            "id": tid,
+            "date": "N/A",
+            "fee_type": "N/A",
+            "name": "N/A",
+            "contact": "N/A",
+            "roll": "N/A",
+            "board": "N/A",
+            "year": "N/A",
+            "amount": "0.00"
+        }
+
+        tds = soup.find_all("td")
+
+        for i, td in enumerate(tds):
+
+            txt = td.get_text(strip=True).replace(":", "")
+
+            if i + 1 < len(tds):
+
+                val = tds[i + 1].get_text(strip=True)
+
+                if "Transaction Id" == txt:
+                    d["id"] = val
+
+                elif "Date" == txt:
+                    d["date"] = val
+
+                elif "Fee Type" == txt:
+                    d["fee_type"] = val
+
+                elif "Student Name" == txt:
+                    d["name"] = val
+
+                elif "Contact No" == txt:
+                    d["contact"] = val
+
+                elif "Roll" == txt:
+                    d["roll"] = val
+
+                elif "Board" == txt:
+                    d["board"] = val
+
+                elif "Year" == txt:
+                    d["year"] = val
+
+                elif "Fee Amount" == txt:
+                    d["amount"] = val
+
+        return d
+
+    except:
+        return None
+
+# =========================================================
+# MYMENSINGH RESULT FETCH
+# =========================================================
+
+def fetch_mym(roll):
+
+    main_page = (
+        "https://www.mymensingheducationboard.gov.bd/"
+        "resultmbs25/"
+    )
+
+    post_url = (
+        "https://www.mymensingheducationboard.gov.bd/"
+        "resultmbs25/result.php"
+    )
+
+    headers2 = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": main_page,
+        "Origin":
+        "https://www.mymensingheducationboard.gov.bd",
+        "Content-Type":
+        "application/x-www-form-urlencoded"
+    }
+
+    try:
+
+        s = requests.Session()
+
+        s.get(
+            main_page,
+            headers=headers2,
+            verify=False,
+            timeout=10
+        )
+
+        payload = {
+            "roll": str(roll)
+        }
+
+        r = s.post(
+            post_url,
+            data=payload,
+            headers=headers2,
+            timeout=15,
+            verify=False
+        )
+
+        if (
+            "Result" not in r.text
+            and "Name" not in r.text
+        ):
+            return None, None
+
+        soup = BeautifulSoup(
+            r.text,
+            "html.parser"
+        )
+
         info = {}
-        all_tds = soup.find_all("td")
-        for i, td in enumerate(all_tds):
-            text = td.get_text(strip=True)
-            if "Name" == text: info['name'] = all_tds[i+1].get_text(strip=True)
-            elif "Father's Name" == text: info['father'] = all_tds[i+1].get_text(strip=True)
-            elif "Mother's Name" == text: info['mother'] = all_tds[i+1].get_text(strip=True)
-            elif "Group" == text: info['group'] = all_tds[i+1].get_text(strip=True)
-            elif "GPA" == text: info['gpa'] = all_tds[i+1].get_text(strip=True)
-            elif "Institute" == text: info['institute'] = all_tds[i+1].get_text(strip=True)
-        
+
+        tds = soup.find_all("td")
+
+        for i, td in enumerate(tds):
+
+            txt = td.get_text(strip=True)
+
+            if i + 1 < len(tds):
+
+                val = tds[i + 1].get_text(strip=True)
+
+                if "Name" == txt:
+                    info['name'] = val
+
+                elif "Father's Name" == txt:
+                    info['father'] = val
+
+                elif "Mother's Name" == txt:
+                    info['mother'] = val
+
+                elif "Group" == txt:
+                    info['group'] = val
+
+                elif "Session" == txt:
+                    info['session'] = val
+
+                elif "Passing Year" == txt:
+                    info['year'] = val
+
+                elif "Type" == txt:
+                    info['type'] = val
+
+                elif "Center" == txt:
+                    info['center'] = val
+
+                elif "Result" == txt:
+                    info['gpa'] = (
+                        val.replace("GPA=", "")
+                    )
+
+                elif "Institute" == txt:
+                    info['institute'] = val
+
         subjects = []
+
         rows = soup.find_all("tr")
+
         for row in rows:
+
             cols = row.find_all("td")
-            if len(cols) >= 3 and cols[0].get_text(strip=True).isdigit():
-                subjects.append(f"{cols[0].get_text(strip=True)} → {cols[1].get_text(strip=True)} → {cols[2].get_text(strip=True)}")
+
+            if len(cols) == 2:
+
+                s_name = cols[0].get_text(strip=True)
+                grade = cols[1].get_text(strip=True)
+
+                if (
+                    s_name != "Subject"
+                    and len(grade) <= 2
+                ):
+
+                    subjects.append(
+                        f"{s_name} → {grade}"
+                    )
+
         return info, subjects
-    except Exception as e:
-        print(f"Cumilla Board Connection Error: {e}")
+
+    except:
         return None, None
 
-# --- চট্টগ্রাম বোর্ড লজিক ---
-def fetch_ctg(roll):
-    url = "https://sresult.bise-ctg.gov.bd/rxto2025/individual/result.php"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", 
-        "Referer": "https://sresult.bise-ctg.gov.bd/rxto2025/individual/"
-    }
-    try:
-        r = requests.post(url, data={"roll": roll, "button2": "Submit"}, headers=headers, timeout=15, verify=False)
-        if r.status_code != 200 or "Name" not in r.text:
-            return None, None
-            
-        soup = BeautifulSoup(r.text, "html.parser")
-        info = {}
-        all_tds = soup.find_all("td")
-        for i, td in enumerate(all_tds):
-            text = td.get_text(strip=True)
-            if "Name" == text: info['name'] = all_tds[i+1].get_text(strip=True)
-            elif "Father's Name" == text: info['father'] = all_tds[i+1].get_text(strip=True)
-            elif "Mother's Name" == text: info['mother'] = all_tds[i+1].get_text(strip=True)
-            elif "Reg. NO" == text: info['reg'] = all_tds[i+1].get_text(strip=True)
-            elif "DATE OF BIRTH" == text: info['dob'] = all_tds[i+1].get_text(strip=True)
-            elif "Group" == text: info['group'] = all_tds[i+1].get_text(strip=True)
-            elif "GPA" in text: info['gpa'] = text.split("=")[-1].strip()
-            elif "Institute" == text: info['institute'] = all_tds[i+1].get_text(strip=True)
-        
-        subjects = []
-        rows = soup.find_all("tr")
-        for row in rows:
-            cols = row.find_all("td")
-            if len(cols) == 3 and cols[0].get_text(strip=True).isdigit() and len(cols[0].get_text(strip=True)) == 3:
-                subjects.append(f"{cols[0].get_text(strip=True)} → {cols[1].get_text(strip=True)} → {cols[2].get_text(strip=True)}")
-        return info, subjects
-    except Exception as e:
-        print(f"Chattogram Board Connection Error: {e}")
-        return None, None
+# =========================================================
+# BUTTONS
+# =========================================================
 
-# ----------- ৪. বট হ্যান্ডলারস -----------
+def phone_buttons(phone):
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # বাটন লেআউট থেকে ময়মনসিংহ বাদ দিয়ে শুধুমাত্র সচল দুটি বোর্ড রাখা হয়েছে
-    keyboard = [["Cumilla", "Chattogram"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    keyboard = []
+
+    if len(phone) >= 11:
+
+        keyboard.append([
+            InlineKeyboardButton(
+                "🟢 WhatsApp",
+                url=f"https://wa.me/88{phone}"
+            ),
+
+            InlineKeyboardButton(
+                "🔵 Telegram",
+                url=f"https://t.me/+88{phone}"
+            )
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "👉 Next 500",
+            callback_data="next_500"
+        )
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
+
+def next_button():
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "👉 Next 500",
+                callback_data="next_500"
+            )
+        ]
+    ])
+
+# =========================================================
+# SONALI OUTPUT
+# =========================================================
+
+async def send_sonali_result(
+    update_or_query,
+    data_list
+):
+
+    msg_source = (
+        update_or_query.message
+        if hasattr(update_or_query, 'message')
+        else update_or_query
+    )
+
+    final_output = (
+        "🏛️ <b>XI Admission Fee Result</b>\n\n"
+    )
+
+    phones = []
+
+    for i, data in enumerate(data_list, 1):
+
+        final_output += (
+            f"🎯 Result {i}\n"
+
+            f"<pre>"
+            f"🆔 Transaction Id: {data['id']}\n"
+            f"👤 Student Name: {data['name']}\n"
+            f"🔢 Roll: {data['roll']}\n"
+            f"🏫 Board: {data['board']}\n"
+            f"📆 Year: {data['year']}\n"
+            f"📳 Contact No: {data['contact']}\n"
+            f"📝 Fee Type: {data['fee_type']}\n"
+            f"💰 Fee Amount: {data['amount']}\n"
+            f"📅 Date: {data['date']}"
+            f"</pre>\n\n"
+        )
+
+        p = data["contact"].strip()[-11:]
+
+        if len(p) >= 11 and p not in phones:
+            phones.append(p)
+
+    await msg_source.reply_text(
+        final_output,
+        parse_mode="HTML",
+        reply_markup=phone_buttons(
+            phones[0]
+        ) if phones else next_button()
+    )
+
+# =========================================================
+# SSC OUTPUT
+# =========================================================
+
+async def send_ssc_result(
+    update_or_query,
+    roll,
+    marksheet
+):
+
+    msg_source = (
+        update_or_query.message
+        if hasattr(update_or_query, 'message')
+        else update_or_query
+    )
+
+    info, subjects = marksheet
+
+    sub_text = "\n".join(subjects)
+
+    final_msg = (
+        f"🧑‍🎓 <b>STUDENT INFORMATION</b>\n"
+        f"━━━━━━━━━━━━━━\n\n"
+
+        f"👤 Name: {info.get('name')}\n"
+        f"👨 Father: {info.get('father')}\n"
+        f"👩 Mother: {info.get('mother')}\n"
+
+        f"\n━━━━━━━━━━━━━━\n"
+        f"📘 <b>SSC RESULT 2025</b>\n"
+        f"━━━━━━━━━━━━━━\n\n"
+
+        f"🆔 Roll No: {roll}\n"
+        f"🏫 Board: MYMENSINGH\n"
+        f"📚 Group: {info.get('group')}\n"
+        f"📅 Session: {info.get('session')}\n"
+        f"📝 Type: {info.get('type')}\n"
+
+        f"\n📊 Result: GPA: "
+        f"{info.get('gpa')}\n\n"
+
+        f"🏫 Institute: "
+        f"{info.get('institute')}\n"
+
+        f"📍 Center: "
+        f"{info.get('center')}\n\n"
+
+        f"📊 <b>SUBJECTS</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+
+        f"<pre>{sub_text}</pre>"
+    )
+
+    await msg_source.reply_text(
+        final_msg,
+        parse_mode="HTML",
+        reply_markup=next_button()
+    )
+
+# =========================================================
+# MASTER OUTPUT
+# =========================================================
+
+async def send_master_result(
+    update_or_query,
+    sonali_list,
+    marksheet
+):
+
+    msg_source = (
+        update_or_query.message
+        if hasattr(update_or_query, 'message')
+        else update_or_query
+    )
+
+    info, subjects = marksheet
+
+    sub_text = "\n".join(subjects)
+
+    final_output = ""
+
+    phones = []
+
+    for i, sonali in enumerate(sonali_list, 1):
+
+        final_output += (
+
+            f"🧑‍🎓 <b>STUDENT INFORMATION</b>\n"
+            f"━━━━━━━━━━━━━━\n\n"
+
+            f"🎯 Result {i}\n\n"
+
+            f"🆔 Transaction Id: "
+            f"{sonali['id']}\n"
+
+            f"👤 Name: "
+            f"{info.get('name')}\n"
+
+            f"👨 Father: "
+            f"{info.get('father')}\n"
+
+            f"👩 Mother: "
+            f"{info.get('mother')}\n"
+
+            f"\n━━━━━━━━━━━━━━\n"
+            f"📘 <b>SSC RESULT 2025</b>\n"
+            f"━━━━━━━━━━━━━━\n\n"
+
+            f"🔢 Roll No: "
+            f"{sonali['roll']}\n"
+
+            f"🏫 Board: MYMENSINGH\n"
+
+            f"📚 Group: "
+            f"{info.get('group')}\n"
+
+            f"📅 Session: "
+            f"{info.get('session')}\n"
+
+            f"📝 Type: "
+            f"{info.get('type')}\n"
+
+            f"📆 Year: "
+            f"{sonali['year']}\n"
+
+            f"📊 Result: GPA: "
+            f"{info.get('gpa')}\n"
+
+            f"📳 Contact No: "
+            f"{sonali['contact']}\n"
+
+            f"📝 Fee Type: "
+            f"{sonali['fee_type']}\n"
+
+            f"💰 Fee Amount: "
+            f"{sonali['amount']}\n"
+
+            f"📅 Date: "
+            f"{sonali['date']}\n\n"
+
+            f"🏫 Institute: "
+            f"{info.get('institute')}\n"
+
+            f"📍 Center: "
+            f"{info.get('center')}\n\n"
+
+            f"📊 <b>SUBJECTS</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+
+            f"<pre>{sub_text}</pre>\n\n"
+        )
+
+        p = sonali["contact"].strip()[-11:]
+
+        if len(p) >= 11 and p not in phones:
+            phones.append(p)
+
+    await msg_source.reply_text(
+        final_output,
+        parse_mode="HTML",
+        reply_markup=phone_buttons(
+            phones[0]
+        ) if phones else next_button()
+    )
+
+# =========================================================
+# SEARCH SYSTEM
+# =========================================================
+
+async def run_search(
+    update_or_query,
+    context,
+    start_roll,
+    end_roll,
+    mode
+):
+
+    global current_search_id
+
+    this_id = current_search_id
+
+    msg_source = (
+        update_or_query.message
+        if hasattr(update_or_query, 'message')
+        else update_or_query
+    )
+
+    status_msg = await msg_source.reply_text(
+        "⏳ <b>Scanning...</b>",
+        parse_mode="HTML"
+    )
+
+    context.user_data["current_end"] = end_roll
+
+    found = 0
+
+    total = end_roll - start_roll + 1
+
+    for i, roll in enumerate(
+        range(start_roll, end_roll + 1),
+        1
+    ):
+
+        if this_id != current_search_id:
+            return
+
+        try:
+
+            # =====================================================
+            # SONALI MODE
+            # =====================================================
+
+            if mode == "sonali":
+
+                search_url = (
+                    "https://billpay.sonalibank.com.bd/"
+                    f"XIClassAdmission/Home/Search?"
+                    f"searchStr={roll}"
+                )
+
+                r = session.get(
+                    search_url,
+                    headers=headers,
+                    timeout=10,
+                    verify=False
+                )
+
+                ids = re.findall(
+                    r'Voucher/([A-Za-z0-9\-]+)',
+                    r.text
+                )
+
+                sonali_results = []
+
+                for tid in set(ids):
+
+                    sonali = get_sonali_data(tid)
+
+                    if (
+                        sonali
+                        and sonali["name"] != "N/A"
+                        and sonali["board"].strip().lower()
+                        in ["mymensingh"]
+                    ):
+
+                        sonali_results.append(sonali)
+
+                if sonali_results:
+
+                    found += 1
+
+                    await send_sonali_result(
+                        update_or_query,
+                        sonali_results
+                    )
+
+            # =====================================================
+            # SSC MODE
+            # =====================================================
+
+            elif mode == "ssc":
+
+                marksheet = fetch_mym(
+                    str(roll)
+                )
+
+                if (
+                    marksheet
+                    and marksheet[0]
+                ):
+
+                    found += 1
+
+                    await send_ssc_result(
+                        update_or_query,
+                        roll,
+                        marksheet
+                    )
+
+            # =====================================================
+            # MASTER MODE
+            # =====================================================
+
+            elif mode == "master":
+
+                search_url = (
+                    "https://billpay.sonalibank.com.bd/"
+                    f"XIClassAdmission/Home/Search?"
+                    f"searchStr={roll}"
+                )
+
+                r = session.get(
+                    search_url,
+                    headers=headers,
+                    timeout=10,
+                    verify=False
+                )
+
+                ids = re.findall(
+                    r'Voucher/([A-Za-z0-9\-]+)',
+                    r.text
+                )
+
+                sonali_results = []
+
+                for tid in set(ids):
+
+                    sonali = get_sonali_data(tid)
+
+                    if (
+                        sonali
+                        and sonali["name"] != "N/A"
+                        and sonali["board"].strip().lower()
+                        in ["mymensingh"]
+                    ):
+
+                        sonali_results.append(sonali)
+
+                if sonali_results:
+
+                    marksheet = fetch_mym(
+                        sonali_results[0]["roll"]
+                    )
+
+                    if (
+                        marksheet
+                        and marksheet[0]
+                    ):
+
+                        found += 1
+
+                        await send_master_result(
+                            update_or_query,
+                            sonali_results,
+                            marksheet
+                        )
+
+            # =====================================================
+
+            if i % 5 == 0 or i == total:
+
+                await status_msg.edit_text(
+                    f"⏳ <b>Processing</b>\n"
+                    f"🔢 Roll: {roll}\n"
+                    f"📊 Found: {found}\n"
+                    f"✅ Progress: {i}/{total}",
+                    parse_mode="HTML"
+                )
+
+            await asyncio.sleep(0.1)
+
+        except:
+            continue
+
+    await status_msg.delete()
+
+    await msg_source.reply_text(
+        f"✅ Done!\n📊 Found Students: {found}"
+    )
+
+# =========================================================
+# START
+# =========================================================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    global current_search_id
+
+    current_search_id += 1
+
+    keyboard = [
+        ["1️⃣ Sonali Result", "2️⃣ SSC Result"],
+        ["3️⃣ Master Result"]
+    ]
+
+    reply_markup = ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True
+    )
+
     await update.message.reply_text(
-        "👋 স্বাগতম! নিচের বাটন থেকে আপনার বোর্ড সিলেক্ট করুন:", 
+        "🚀 SELECT RESULT MODE",
         reply_markup=reply_markup
     )
 
-async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# HANDLE TEXT
+# =========================================================
+
+async def handle_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    global current_search_id
+
     text = update.message.text.strip()
+
     chat_id = update.message.chat.id
 
-    # বোর্ড সিলেকশন হ্যান্ডলিং
-    if text in ["Cumilla", "Chattogram"]:
-        user_preferences[chat_id] = text
-        await update.message.reply_text(f"✅ আপনি **{text}** সিলেক্ট করেছেন। এবার রোল নম্বর দিন।")
+    if text == "1️⃣ Sonali Result":
+
+        user_modes[chat_id] = "sonali"
+
+        await update.message.reply_text(
+            "✅ Sonali Result Mode Activated\n\n"
+            "📌 Send Roll or Range"
+        )
+
         return
 
-    # রোল নম্বর হ্যান্ডলিং
-    if text.isdigit():
-        board = user_preferences.get(chat_id)
-        if not board:
-            await update.message.reply_text("❌ আগে বাটন থেকে বোর্ড সিলেক্ট করুন।")
-            return
+    elif text == "2️⃣ SSC Result":
 
-        status = await update.message.reply_text(f"⏳ Processing {board} Board Roll: {text}...")
-        
-        info, subjects = None, None
-        # বোর্ড অনুযায়ী স্ক্র্যাপার কল (ট্রাই-এক্সেপ্ট প্রোটেকশন সহ)
-        try:
-            if board == "Cumilla": 
-                info, subjects = fetch_cumilla(text)
-            elif board == "Chattogram": 
-                info, subjects = fetch_ctg(text)
-        except Exception as queue_error:
-            print(f"Scraping Execution Error: {queue_error}")
-        
-        if info and info.get('name'):
-            try:
-                await status.delete()
-                sub_text = "\n".join(subjects)
-                
-                # আউটপুট ফরম্যাটিং
-                final_msg = f"🧑‍🎓 <b>STUDENT INFORMATION</b>\n━━━━━━━━━━━━━━\n\n"
-                final_msg += f"👤 Name: {info.get('name')}\n👨 Father: {info.get('father')}\n👩 Mother: {info.get('mother')}\n"
-                if board == "Chattogram": final_msg += f"📅 Date of Birth: {info.get('dob')}\n"
-                
-                final_msg += f"\n━━━━━━━━━━━━━━\n📘 <b>SSC RESULT {info.get('year', '2025')}</b>\n━━━━━━━━━━━━━━\n\n"
-                final_msg += f"🆔 Roll No: {text}\n"
-                if board == "Chattogram": final_msg += f"📄 Registration No: {info.get('reg')}\n"
-                final_msg += f"🏫 Board: {board.upper()}\n📚 Group: {info.get('group')}\n"
-                
-                final_msg += f"\n📊 Result: GPA: {info.get('gpa')}\n\n🏫 Institute: {info.get('institute')}\n"
-                final_msg += f"\n📊 <b>SUBJECTS</b>\n━━━━━━━━━━━━━━\n<pre>{sub_text}</pre>"
-                
-                await update.message.reply_text(final_msg, parse_mode="HTML")
-            except Exception as send_error:
-                await update.message.reply_text("❌ ডেটা প্রসেস বা মেসেজ পাঠাতে সমস্যা হয়েছে।")
-                print(f"Message Sending Error: {send_error}")
+        user_modes[chat_id] = "ssc"
+
+        await update.message.reply_text(
+            "✅ SSC Result Mode Activated\n\n"
+            "📌 Send Roll or Range"
+        )
+
+        return
+
+    elif text == "3️⃣ Master Result":
+
+        user_modes[chat_id] = "master"
+
+        await update.message.reply_text(
+            "✅ Master Result Mode Activated\n\n"
+            "📌 Send Roll or Range"
+        )
+
+        return
+
+    mode = user_modes.get(chat_id)
+
+    if not mode:
+
+        await update.message.reply_text(
+            "❌ First Select Result Mode"
+        )
+
+        return
+
+    current_search_id += 1
+
+    try:
+
+        if "-" in text:
+
+            s, e = map(int, text.split("-"))
+
+            if e - s > 2000:
+
+                await update.message.reply_text(
+                    "❌ Maximum Range 2000"
+                )
+
+                return
+
+            await run_search(
+                update,
+                context,
+                s,
+                e,
+                mode
+            )
+
         else:
-            await status.edit_text(f"❌ {board} বোর্ডের সার্ভার রেসপন্স করছে না অথবা রোল নম্বরটি সঠিক নয়।")
-    else:
-        await update.message.reply_text("❌ দয়া করে একটি সঠিক রোল নম্বর অথবা মেনু থেকে বোর্ড সিলেক্ট করুন।")
+
+            roll = int(text)
+
+            await run_search(
+                update,
+                context,
+                roll,
+                roll,
+                mode
+            )
+
+    except:
+
+        await update.message.reply_text(
+            "❌ Invalid Roll Format"
+        )
+
+# =========================================================
+# CALLBACK
+# =========================================================
+
+async def callback_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    global current_search_id
+
+    query = update.callback_query
+
+    await query.answer()
+
+    chat_id = query.message.chat.id
+
+    if query.data == "next_500":
+
+        current_search_id += 1
+
+        mode = user_modes.get(chat_id)
+
+        last_end = context.user_data.get(
+            "current_end",
+            0
+        )
+
+        await run_search(
+            query,
+            context,
+            last_end + 1,
+            last_end + 500,
+            mode
+        )
+
+# =========================================================
+# MAIN
+# =========================================================
 
 if __name__ == "__main__":
-    keep_alive() # রেন্ডারের জন্য ফ্লাস্ক সার্ভার স্টার্ট
-    app_tg = ApplicationBuilder().token(BOT_TOKEN).build()
-    app_tg.add_handler(CommandHandler("start", start))
-    app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
-    print("Bot is Running with Dual-Board Stability...")
-    app_tg.run_polling()
+
+    keep_alive()
+
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    application.add_handler(
+        CommandHandler("start", start)
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(callback_handler)
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_text
+        )
+    )
+
+    print("MYMENSINGH MASTER BOT RUNNING")
+
+    application.run_polling(
+        drop_pending_updates=True
+    )
